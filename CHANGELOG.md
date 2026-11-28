@@ -257,6 +257,20 @@ is keyed by the whole block hash, `bloomRelevantUpdate` takes the network,
 
 ### Fixed
 
+- **The multisig derivation functions give an error value where they
+  threw.** `deriveMSAddr`, `deriveMSAddrs`, `derivePathMSAddr` and
+  `derivePathMSAddrs` return `Either String`, and gave `Left` for a number
+  of signatures that the keys cannot meet and for a redeem script that is
+  too long. For a key without the child that was asked for, they threw
+  `DerivationException` out of pure code instead: a key at depth 255, which
+  has no child, an index of 2^31 or more, and a path that leads below depth
+  255. A key at depth 255 is a valid extended key, which `xPubImport` reads
+  as Bitcoin Core does. So a program that makes multisig addresses from the
+  keys of other parties, and handles the `Left`, could still be stopped by
+  the key of one party. The four functions now give
+  `Left "Maximum derivation depth exceeded"` and
+  `Left "Invalid child derivation index"`, the texts of `tryDerivePubPath`.
+  No type changes, and keys that derive give the addresses they gave.
 - **A transaction is equal to itself however its witness list is written.**
   The witness of a `Tx` is a list beside the inputs, so one transaction has
   several lists: none or a list of empty stacks, with or without the empty

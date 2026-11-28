@@ -49,3 +49,7 @@ P2SH redeem script, and their tests.
 - A test of a function that gives an endless list: compare `isNothing` or
   `take n` of it. `shouldBe` on the list prints it without end when it
   fails.
+- A list that filters its indices (`deriveMSAddrs`) has no element and no
+  end when no index passes, as for keys at depth 255. A test of its `Left`
+  compares `anyList result` (`ExtendedSpec.hs`): `length . take 1` of the
+  list never ends when the test fails, and neither does the printed failure.

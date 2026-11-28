@@ -25,7 +25,7 @@ import Data.String (fromString)
 import Data.String.Conversions (cs)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Word (Word32)
+import Data.Word (Word32, Word8)
 import Haskoin.Address
 import Haskoin.Crypto
 import Haskoin.Network.Constants
@@ -384,9 +384,9 @@ spec = do
         `shouldBe` Left "The redeem script is 684 bytes long, and a pay-to-script-hash redeem script can have at most 520"
     it "deriveMSAddrs and the path forms fail for 16 keys as deriveMSAddr does" $ do
       let tooLong = Left "The redeem script is 547 bytes long, and a pay-to-script-hash redeem script can have at most 520"
-      (length . take 1 <$> deriveMSAddrs (accountKeys 16) 1 0) `shouldBe` tooLong
+      anyList (deriveMSAddrs (accountKeys 16) 1 0) `shouldBe` tooLong
       (fst <$> derivePathMSAddr (accountKeys 16) (Deriv :/ 1) 1 0) `shouldBe` tooLong
-      (length . take 1 <$> derivePathMSAddrs (accountKeys 16) (Deriv :/ 1) 1 0) `shouldBe` tooLong
+      anyList (derivePathMSAddrs (accountKeys 16) (Deriv :/ 1) 1 0) `shouldBe` tooLong
     it "deriveMSAddr gives an error value for a signature count the keys cannot meet" $ do
       (fst <$> deriveMSAddr [xpub1, xpub2] 3 0)
         `shouldBe` Left "encodeOutput: multisig requires more signatures than it has keys"
@@ -396,8 +396,51 @@ spec = do
         `shouldBe` Left "encodeOutput: multisig must require at least one signature"
       (fst <$> deriveMSAddr [] 1 0)
         `shouldBe` Left "encodeOutput: multisig requires more signatures than it has keys"
-      (length . take 1 <$> deriveMSAddrs [xpub1, xpub2] 3 0)
+      anyList (deriveMSAddrs [xpub1, xpub2] 3 0)
         `shouldBe` Left "encodeOutput: multisig requires more signatures than it has keys"
+  describe "Multisig derivation from a key that has no such child" $ do
+    -- BIP 32 writes the depth of a key in one byte, so a key at depth 255
+    -- has no child. An index of 2^31 or more is not the index of a soft
+    -- child. Both are error values, as the other failures of the four
+    -- multisig functions are.
+    let deep = atDepth 255 xpub1
+        tooDeep = Left "Maximum derivation depth exceeded"
+        hardIndex = Left "Invalid child derivation index"
+        steps256 = foldl (:/) Deriv (replicate 256 0) :: SoftPath
+    it "deriveMSAddr gives an error value for keys at depth 255" $
+      (fst <$> deriveMSAddr [deep, deep] 1 0) `shouldBe` tooDeep
+    it "deriveMSAddr gives an error value when one key of several is at depth 255" $ do
+      (fst <$> deriveMSAddr [xpub1, deep] 1 0) `shouldBe` tooDeep
+      (fst <$> deriveMSAddr [deep, xpub2] 1 0) `shouldBe` tooDeep
+    it "deriveMSAddrs gives an error value for keys at depth 255" $
+      anyList (deriveMSAddrs [deep, deep] 1 0) `shouldBe` tooDeep
+    it "deriveMSAddr gives an error value for an index of 2^31" $
+      (fst <$> deriveMSAddr [xpub1, xpub2] 1 0x80000000) `shouldBe` hardIndex
+    it "deriveMSAddrs gives an error value for a start index of 2^31" $
+      anyList (deriveMSAddrs [xpub1, xpub2] 1 0x80000000) `shouldBe` hardIndex
+    it "derivePathMSAddr gives an error value when its path ends at depth 255" $
+      -- one step below depth 254 is depth 255, where the index has no key
+      (fst <$> derivePathMSAddr [atDepth 254 xpub1] (Deriv :/ 0) 1 0) `shouldBe` tooDeep
+    it "derivePathMSAddrs gives an error value when its path ends at depth 255" $
+      anyList (derivePathMSAddrs [atDepth 254 xpub1] (Deriv :/ 0) 1 0) `shouldBe` tooDeep
+    it "derivePathMSAddr gives an error value for a path of 256 steps from a master key" $
+      (fst <$> derivePathMSAddr [xpub1] steps256 1 0) `shouldBe` tooDeep
+    it "derivePathMSAddrs gives an error value for a path of 256 steps from a master key" $
+      anyList (derivePathMSAddrs [xpub1] steps256 1 0) `shouldBe` tooDeep
+    it "deriveMSAddr of 16 keys at depth 255 names the keys, which come before the script" $
+      (fst <$> deriveMSAddr (replicate 16 deep) 1 0) `shouldBe` tooDeep
+    it "deriveMSAddr gives the address of the children of keys at depth 254" $
+      -- BIP 32 does not hash the depth of the parent: this is the 2-of-2 of
+      -- child 0 of vectors 1 and 2, as above
+      (addrToText btc . fst <$> deriveMSAddr [atDepth 254 xpub2, atDepth 254 xpub1] 2 0)
+        `shouldBe` Right (Just "3ARSZ47cqQBb9y6QhTk6UoWHMwpruUryZp")
+    it "derivePathMSAddr gives the address below a path that ends at depth 254" $
+      -- the 2-of-2 of m/1/0 of vectors 1 and 2, as below
+      (addrToText btc . fst <$> derivePathMSAddr [atDepth 253 xpub1, atDepth 253 xpub2] (Deriv :/ 1) 2 0)
+        `shouldBe` Right (Just "39HHTbxsnt5SrM4h2BtUgVRFzGYcavJ8M4")
+    it "deriveMSAddrs lists from the start index and wraps around after 2^31 - 1" $
+      (map lst3 . take 3 <$> deriveMSAddrs [xpub1, xpub2] 2 0x7ffffffe)
+        `shouldBe` Right [0x7ffffffe, 0x7fffffff, 0]
   describe "Address derivation below a path" $ do
     -- vector 2: m/0/0 has public key 0205c889…ef8c
     it "derivePathAddr derives the address of a child below a soft path" $ do
@@ -645,6 +688,13 @@ xpub1, xpub2 :: XPubKey
 xpub1 = fromJust (xPubImport btc xpub1Text)
 xpub2 = fromJust (xPubImport btc xpub2Text)
 
+-- | Whether a function gives a list, and nothing of the list. When no index
+-- has an address, as for keys at depth 255, a list of the addresses has no
+-- element and no end: a test that counted its first element, or printed
+-- it in a failure, would never end.
+anyList :: Either String [a] -> Either String ()
+anyList = fmap (const ())
+
 -- | The extended public keys m/0 to m/(n-1) of BIP 32 test vector 1.
 accountKeys :: Int -> [XPubKey]
 accountKeys n =
@@ -656,6 +706,12 @@ accountKeys n =
 
 xprv1 :: XPrvKey
 xprv1 = fromJust (xPrvImport btc xprv1Text)
+
+-- | An extended public key with another depth byte. The key and the chain
+-- code stay, so its children are the same keys, one level below the new
+-- depth.
+atDepth :: Word8 -> XPubKey -> XPubKey
+atDepth depth k = XPubKey depth k.parent k.index k.chain k.key
 
 pubKeyOfSubKeyIsSubKeyOfPubKey :: XPrvKey -> Word32 -> Bool
 pubKeyOfSubKeyIsSubKeyOfPubKey k i =

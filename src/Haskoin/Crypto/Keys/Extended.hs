@@ -674,27 +674,40 @@ deriveCompatWitnessAddrs net k start = do
 -- Cash has no such address, and spends a longer redeem script since May
 -- 2025, but the limit is the same there: this function gives no address for
 -- 16 to 20 keys on any network.
+--
+-- Fails also when a key has no child at that index: a key at depth 255 has
+-- no child at all, and the index must be below 2^31. An extended public key
+-- that another party sent can be at depth 255, since 'xPubImport' reads it
+-- as Bitcoin Core does. Every failure is an error value, so that one check
+-- of the result is enough for keys that come from outside. The function
+-- does not throw.
 deriveMSAddr ::
   [XPubKey] -> Int -> KeyIndex -> Either String (Address, RedeemScript)
 deriveMSAddr keys m i = do
+  children <- mapM (`tryPubSubKey` i) keys
+  let rdm = sortMulSig $ PayMulSig (map (wrapPubKey True . (.key)) children) m
   addr <- payToScriptAddress rdm
   return (addr, rdm)
-  where
-    rdm = sortMulSig $ PayMulSig k m
-    k = map (wrapPubKey True . (.key) . flip pubSubKey i) keys
 
 -- | Cyclic list of all multisig addresses derived from a list of public keys,
 -- a number of required signatures /m/ and starting from an offset index. The
--- derivation type is a public, soft derivation. Fails as 'deriveMSAddr' does.
+-- derivation type is a public, soft derivation. Fails as 'deriveMSAddr' does,
+-- and does not throw: a start index of 2^31 or more is an error value too.
+--
+-- The list leaves out an index at which a key has no valid child, and goes
+-- on with the next one, as BIP 32 asks of a wallet. That happens less than
+-- once in 2^127 derivations.
 deriveMSAddrs ::
   [XPubKey] ->
   Int ->
   KeyIndex ->
   Either String [(Address, RedeemScript, KeyIndex)]
 deriveMSAddrs keys m start = do
-  -- Whether an address can be made depends on the number of keys and on m,
-  -- not on the index. One check therefore covers the whole list, which stays
-  -- lazy and endless.
+  -- Whether an address can be made depends on the keys, on m and on the
+  -- range of the index, which are the same for every index of the list:
+  -- 'cycleIndex' stays below 2^31. One check therefore covers the whole
+  -- list, which stays lazy and endless, and it comes before 'cycleIndex',
+  -- which throws for a start index it cannot take.
   _ <- deriveMSAddr keys m start
   return
     [ (a, rdm, i)
@@ -1241,27 +1254,34 @@ derivePathAddrs ::
 derivePathAddrs key path = deriveAddrs (derivePubPath path key)
 
 -- | Derive a multisig address from a given parent path. The number of required
--- signatures (m in m of n) is also needed. Fails as 'deriveMSAddr' does.
+-- signatures (m in m of n) is also needed. Fails as 'deriveMSAddr' does, and
+-- when a key cannot follow the path, as 'tryDerivePubPath' does. The key of an
+-- address is one step below the end of the path, so the path must end at
+-- depth 254 at most. The function does not throw.
 derivePathMSAddr ::
   [XPubKey] ->
   SoftPath ->
   Int ->
   KeyIndex ->
   Either String (Address, RedeemScript)
-derivePathMSAddr keys path =
-  deriveMSAddr $ map (derivePubPath path) keys
+derivePathMSAddr keys path m i = do
+  parents <- mapM (tryDerivePubPath path) keys
+  deriveMSAddr parents m i
 
 -- | Cyclic list of all multisig addresses derived from a given parent path and
 -- starting from the given offset index. The number of required signatures
--- (m in m of n) is also needed. Fails as 'deriveMSAddr' does.
+-- (m in m of n) is also needed. Fails as 'derivePathMSAddr' does, and lists
+-- as 'deriveMSAddrs' does. The keys below the path are derived once, not
+-- once for each address.
 derivePathMSAddrs ::
   [XPubKey] ->
   SoftPath ->
   Int ->
   KeyIndex ->
   Either String [(Address, RedeemScript, KeyIndex)]
-derivePathMSAddrs keys path =
-  deriveMSAddrs $ map (derivePubPath path) keys
+derivePathMSAddrs keys path m start = do
+  parents <- mapM (tryDerivePubPath path) keys
+  deriveMSAddrs parents m start
 
 {- Utilities for extended keys -}
 
