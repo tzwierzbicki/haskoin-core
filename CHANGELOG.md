@@ -48,6 +48,15 @@ is keyed by the whole block hash, `bloomRelevantUpdate` takes the network,
   empty stacks for a transaction without witness. The result is equal to
   the transaction given. See "Fixed" below.
 
+- **Tests of each refusal of `applyPath`, and of a path with no start
+  letter.** The test of the refusals only asked for an error, and each of
+  its three paths had a hardened step. So `applyPath` could derive a public
+  key for a path that starts with `m`, which asks for a private key, with
+  every test passing. Each path now has the reason that `applyPath` gives,
+  and the list has a private path without a hardened step. No test ran a
+  path without `m` or `M`, which takes the kind of the key it is given: six
+  cases now do, on the keys of BIP 32 test vectors 1 and 2 and from a key
+  below the master key, whose text holds its depth. No code changed.
 - **`tryPrvSubKey`, `tryPubSubKey` and `tryHardSubKey` derive one child of
   an extended key, with an error value.** They are in
   `Haskoin.Crypto.Keys.Extended`, beside `prvSubKey`, `pubSubKey` and

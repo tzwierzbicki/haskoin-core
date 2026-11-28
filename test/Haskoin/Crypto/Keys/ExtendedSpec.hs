@@ -701,14 +701,31 @@ spec = do
       evaluate ("0011223344" :: Fingerprint) `shouldThrow` anyErrorCall
   describe "bip32 subkey derivation using string path" $ do
     it "applyPath derives private and public keys along a path" $ testApplyPath
-    it "applyPath refuses private derivations on a public key and hard public derivations" $ testBadApplyPath
+    it "applyPath refuses a private path and a hardened step on a public key, each with its reason" $
+      testBadApplyPath
     it "applyPath gives the keys of BIP32 test vector 1, chain m/0'/1" $ do
-      let exported (XPrv k n) = xPrvExport n k
-          exported (XPub k n) = xPubExport n k
-      fmap exported (applyPath "m/0'/1" (XPrv xprv1 btc))
-        `shouldBe` Right "xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53Kw1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs"
-      fmap exported (applyPath "M/0'/1" (XPrv xprv1 btc))
-        `shouldBe` Right "xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWbWMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ"
+      fmap exportedKey (applyPath "m/0'/1" (XPrv xprv1 btc)) `shouldBe` Right v1Chain0h1Prv
+      fmap exportedKey (applyPath "M/0'/1" (XPrv xprv1 btc)) `shouldBe` Right v1Chain0h1Pub
+    it "applyPath follows a path with no start letter from the key it is given" $ do
+      -- BIP32 test vector 1: one step from chain m/0' is chain m/0'/1. A
+      -- key text holds the depth of its key, which is 2 here, and the
+      -- fingerprint of its parent: a path that started again from a master
+      -- key would give other texts.
+      fmap exportedKey (applyPath "/1" (XPrv (fromJust (xPrvImport btc v1Chain0hPrv)) btc))
+        `shouldBe` Right v1Chain0h1Prv
+      fmap exportedKey (applyPath "/1" (XPub (fromJust (xPubImport btc v1Chain0hPub)) btc))
+        `shouldBe` Right v1Chain0h1Pub
+    it "applyPath with no start letter gives the kind of key it is given" $ do
+      -- a private key stays private, and derives the hardened child m/0'
+      fmap exportedKey (applyPath "/0'" (XPrv xprv1 btc)) `shouldBe` Right v1Chain0hPrv
+      -- a public key stays public: chain m/0 of BIP32 test vector 2
+      fmap exportedKey (applyPath "/0" (XPub xpub2 btc))
+        `shouldBe` Right
+          "xpub69H7F5d8KSRgmmdJg2KhpAK8SR3DjMwAdkxj3ZuxV27CprR9LgpeyGmXUbC6\
+          \wb7ERfvrnKZjXoUmmDznezpbZb7ap6r1D3tgFxHmwMkQTPH"
+    it "applyPath with no start letter and no step gives the key itself" $ do
+      fmap exportedKey (applyPath "" (XPrv xprv1 btc)) `shouldBe` Right xprv1Text
+      fmap exportedKey (applyPath "" (XPub xpub1 btc)) `shouldBe` Right xpub1Text
     it "public derivations" $ testDerivePubPath
     it "private derivations" $ testDerivePrvPath
     it "path parsing" testParsePath
@@ -763,7 +780,13 @@ tprv1Text = "tprv8ZgxMBicQKsPeDgjzdC36fs6bMjGApWDNLR9erAXMs5skhMv36j9MV5ecvfavji
 xpub2Text = "xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB"
 
 -- | Chains m/0' and m/0'/1 of BIP32 test vector 1, as the BIP writes them.
-v1Chain0hPrv, v1Chain0h1Prv :: Text
+v1Chain0hPrv, v1Chain0hPub, v1Chain0h1Prv, v1Chain0h1Pub :: Text
+v1Chain0hPub =
+  "xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhw\
+  \BZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw"
+v1Chain0h1Pub =
+  "xpub6ASuArnXKPbfEwhqN6e3mwBcDTgzisQN1wXN9BJcM47sSikHjJf3UFHKkNAWb\
+  \WMiGj7Wf5uMash7SyYq527Hqck2AxYysAA7xmALppuCkwQ"
 v1Chain0hPrv =
   "xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rG\
   \L5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7"
@@ -793,6 +816,11 @@ accountKeys n =
 
 xprv1 :: XPrvKey
 xprv1 = fromJust (xPrvImport btc xprv1Text)
+
+-- | The text of a key of either kind, on its network.
+exportedKey :: XKey -> Text
+exportedKey (XPrv k net) = xPrvExport net k
+exportedKey (XPub k net) = xPubExport net k
 
 -- | An extended public key with another depth byte. The key and the chain
 -- code stay, so its children are the same keys, one level below the new
@@ -879,11 +907,10 @@ testApplyPath =
 testBadApplyPath :: Assertion
 testBadApplyPath =
   sequence_ $ do
-    (key, path) <- badApplyPathVectors
+    (key, path, reason) <- badApplyPathVectors
     return $
-      assertBool path $
-        isLeft $
-          applyPath (fromJust $ parsePath path) key
+      assertEqual path (Left reason) $
+        applyPath (fromJust $ parsePath path) key
 
 testDerivePubPath :: Assertion
 testDerivePubPath =
@@ -987,11 +1014,19 @@ applyPathVectors =
           \WzGmb8oageSRxBY8s4rjr9VXPVp2HQDbwPt4H31Gg4LpB"
     xpub = deriveXPubKey xprv
 
-badApplyPathVectors :: [(XKey, String)]
+-- | Paths that 'applyPath' refuses on a public key, each with the reason it
+-- gives. A path that starts with @m@ asks for a private key, which a public
+-- key cannot give, with or without steps. A hardened step has no public
+-- derivation, whatever the path starts with.
+badApplyPathVectors :: [(XKey, String, String)]
 badApplyPathVectors =
-  [ (XPub xpub btc, "m/8'"),
-    (XPub xpub btc, "M/8'"),
-    (XPub xpub btc, "M/1/2/3'/4/5")
+  [ (XPub xpub btc, "m", "applyPath: Invalid public key"),
+    (XPub xpub btc, "m/8", "applyPath: Invalid public key"),
+    (XPub xpub btc, "m/8'", "applyPath: Invalid public key"),
+    (XPub xpub btc, "M/8'", "applyPath: Invalid hard derivation"),
+    (XPub xpub btc, "M/1/2/3'/4/5", "applyPath: Invalid hard derivation"),
+    (XPub xpub btc, "/8'", "applyPath: Invalid hard derivation"),
+    (XPub xpub btc, "/1/2/3'/4/5", "applyPath: Invalid hard derivation")
   ]
   where
     xprv =
