@@ -37,6 +37,9 @@ module Haskoin.Crypto.Keys.Extended
     prvSubKey,
     pubSubKey,
     hardSubKey,
+    tryPrvSubKey,
+    tryPubSubKey,
+    tryHardSubKey,
     xPrvIsHard,
     xPubIsHard,
     xPrvChild,
@@ -174,8 +177,44 @@ import Text.Read as Read
   )
 import Text.Read.Lex (numberToInteger)
 
--- | A derivation exception is thrown in the very unlikely event that a
--- derivation is invalid.
+-- | The exception of the derivation functions that return no error value:
+-- 'prvSubKey', 'pubSubKey', 'hardSubKey', 'derivePath', 'derivePubPath',
+-- 'makeXPrvKey', the address functions such as 'deriveAddr', and the lists.
+-- They throw it out of pure code, and for ordinary values:
+--
+-- * A parent key at depth 255. BIP 32 writes the depth of a key in one
+--   byte, so such a key has no child. It is a valid key all the same:
+--   'xPubImport' and 'xPrvImport' read it, as Bitcoin Core does, so it can
+--   come from outside.
+--
+-- * A child index of 2^31 or more. The index is given without the hard bit,
+--   for a hardened child too.
+--
+-- * A path that leads below depth 255, for 'derivePath' and 'derivePubPath'.
+--
+-- * A seed that is not 16 to 64 bytes long, for 'makeXPrvKey'.
+--
+-- * A child key that BIP 32 calls invalid: the left half of its hash is the
+--   order of the curve or more, or the key is zero or the point at
+--   infinity. BIP 32 puts this below once in 2^127 derivations. No key and
+--   index are known that give it, and to find one takes about 2^127 tries.
+--
+-- These functions are for keys and paths that the program made itself,
+-- where a failure is a fault of the program: with an error value, each of
+-- their callers would handle a case that never comes. A program that
+-- derives from a key or a path that it was given has two ways:
+--
+-- * It checks the key once, before it derives. A key at depth /d/ has
+--   descendants for 255 - /d/ steps. With that and indices below 2^31, the
+--   last case only is left.
+--
+-- * It calls the forms that give every failure as an error value:
+--   'tryPrvSubKey', 'tryPubSubKey', 'tryHardSubKey', 'tryDerivePath',
+--   'tryDerivePubPath' and 'applyPath'.
+--
+-- As any exception of pure code, it comes where the key or the address is
+-- first used. That can be far from the call that derived it, for example in
+-- a list that is kept for later.
 newtype DerivationException = DerivationException String
   deriving (Eq, Read, Show, Typeable, Generic)
   deriving newtype (NFData)
@@ -357,6 +396,9 @@ deriveXPubKey (XPrvKey d p i c k) = XPubKey d p i c (derivePubKey k)
 -- However, care must be taken not the leak both the parent extended public key
 -- and one of the extended child private keys as this would compromise the
 -- extended parent private key.
+--
+-- Throws 'DerivationException' for a parent at depth 255 and for an index of
+-- 2^31 or more. 'tryPrvSubKey' gives the same failures as an error value.
 prvSubKey ::
   -- | extended parent private key
   XPrvKey ->
@@ -366,7 +408,10 @@ prvSubKey ::
   XPrvKey
 prvSubKey xkey child = orThrow (tryPrvSubKey xkey child)
 
--- | 'prvSubKey' with its failures as an error value.
+-- | 'prvSubKey' with its failures as an error value: 'Left' for a parent at
+-- depth 255, for an index of 2^31 or more, and for the child that BIP 32
+-- calls invalid (see 'DerivationException'). It does not throw. Use it for
+-- a key that the program was given.
 tryPrvSubKey :: XPrvKey -> KeyIndex -> Either String XPrvKey
 tryPrvSubKey xkey child = do
   unless (child < 0x80000000) $ Left hardIndexError
@@ -382,6 +427,9 @@ tryPrvSubKey xkey child = do
 
 -- | Compute a public, soft child key derivation. Given a parent key /M/
 -- and a derivation index /i/, this function will compute /M\/i/.
+--
+-- Throws 'DerivationException' for a parent at depth 255 and for an index of
+-- 2^31 or more. 'tryPubSubKey' gives the same failures as an error value.
 pubSubKey ::
   -- | extended parent public key
   XPubKey ->
@@ -391,7 +439,16 @@ pubSubKey ::
   XPubKey
 pubSubKey xKey child = orThrow (tryPubSubKey xKey child)
 
--- | 'pubSubKey' with its failures as an error value.
+-- | 'pubSubKey' with its failures as an error value: 'Left' for a parent at
+-- depth 255, for an index of 2^31 or more, and for the child that BIP 32
+-- calls invalid (see 'DerivationException'). It does not throw.
+--
+-- Use it for a key that the program was given, such as the account key of
+-- another party or of a request. The address functions have no form of
+-- their own with an error value, because this one gives them all. The
+-- address of 'deriveAddr', for example:
+--
+-- > xPubAddr <$> tryPubSubKey key i
 tryPubSubKey :: XPubKey -> KeyIndex -> Either String XPubKey
 tryPubSubKey xKey child = do
   unless (child < 0x80000000) $ Left hardIndexError
@@ -410,6 +467,10 @@ tryPubSubKey xKey child = do
 -- parent public key and child private keys does not lead to a breach of the
 -- parent private key. Given a parent key /m/ and a derivation index /i/, this
 -- function will compute /m\/i'/.
+--
+-- Throws 'DerivationException' for a parent at depth 255 and for an index of
+-- 2^31 or more: the index is given without the hard bit. 'tryHardSubKey'
+-- gives the same failures as an error value.
 hardSubKey ::
   -- | extended parent private key
   XPrvKey ->
@@ -419,7 +480,10 @@ hardSubKey ::
   XPrvKey
 hardSubKey xkey child = orThrow (tryHardSubKey xkey child)
 
--- | 'hardSubKey' with its failures as an error value.
+-- | 'hardSubKey' with its failures as an error value: 'Left' for a parent at
+-- depth 255, for an index of 2^31 or more, and for the child that BIP 32
+-- calls invalid (see 'DerivationException'). It does not throw. Use it for
+-- a key that the program was given.
 tryHardSubKey :: XPrvKey -> KeyIndex -> Either String XPrvKey
 tryHardSubKey xkey child = do
   unless (child < 0x80000000) $ Left hardIndexError
@@ -588,20 +652,36 @@ xPrvWif net xkey = toWif net (wrapSecKey True xkey.key)
 
 -- | Cyclic list of all private soft child key derivations of a parent key
 -- starting from an offset index.
+--
+-- Throws 'DerivationException' as 'prvSubKey' does, when a key of the list
+-- is used, and as 'cycleIndex' does for a start index of 2^31 or more.
 prvSubKeys :: XPrvKey -> KeyIndex -> [(XPrvKey, KeyIndex)]
 prvSubKeys k = map (\i -> (prvSubKey k i, i)) . cycleIndex
 
 -- | Cyclic list of all public soft child key derivations of a parent key
 -- starting from an offset index.
+--
+-- Throws 'DerivationException' as 'pubSubKey' does, when a key of the list
+-- is used, and as 'cycleIndex' does for a start index of 2^31 or more.
 pubSubKeys :: XPubKey -> KeyIndex -> [(XPubKey, KeyIndex)]
 pubSubKeys k = map (\i -> (pubSubKey k i, i)) . cycleIndex
 
 -- | Cyclic list of all hard child key derivations of a parent key starting
 -- from an offset index.
+--
+-- Throws 'DerivationException' as 'hardSubKey' does, when a key of the list
+-- is used, and as 'cycleIndex' does for a start index of 2^31 or more.
 hardSubKeys :: XPrvKey -> KeyIndex -> [(XPrvKey, KeyIndex)]
 hardSubKeys k = map (\i -> (hardSubKey k i, i)) . cycleIndex
 
 -- | Derive a standard address from an extended public key and an index.
+--
+-- Throws 'DerivationException' as 'pubSubKey' does, for a key at depth 255
+-- and for an index of 2^31 or more, when the address or the key is used.
+-- The type has no error value because whether a key has children is known
+-- before the first address: check the depth of a key that the program was
+-- given, or derive with 'tryPubSubKey', whose comment has the line that
+-- gives this address.
 deriveAddr :: XPubKey -> KeyIndex -> (Address, PubKey)
 deriveAddr k i =
   (xPubAddr key, key.key)
@@ -609,6 +689,7 @@ deriveAddr k i =
     key = pubSubKey k i
 
 -- | Derive a SegWit P2WPKH address from an extended public key and an index.
+-- Throws 'DerivationException' as 'deriveAddr' does.
 deriveWitnessAddr :: XPubKey -> KeyIndex -> (Address, PubKey)
 deriveWitnessAddr k i =
   (xPubWitnessAddr key, key.key)
@@ -618,6 +699,11 @@ deriveWitnessAddr k i =
 -- | Derive a backwards-compatible SegWit P2SH-P2WPKH address from an extended
 -- public key and an index. 'Nothing' on a network without SegWit, as
 -- 'xPubCompatWitnessAddr'.
+--
+-- 'Nothing' says that the network has no such address, and nothing else.
+-- On a network with SegWit, the result for a key at depth 255 or for an
+-- index of 2^31 or more is 'Just', and 'DerivationException' comes when the
+-- address or the key in it is used, as with 'deriveAddr'.
 deriveCompatWitnessAddr :: Network -> XPubKey -> KeyIndex -> Maybe (Address, PubKey)
 deriveCompatWitnessAddr net k i = do
   addr <- xPubCompatWitnessAddr net key
@@ -627,6 +713,12 @@ deriveCompatWitnessAddr net k i = do
 
 -- | Cyclic list of all addresses derived from a public key starting from an
 -- offset index.
+--
+-- Throws 'DerivationException' as 'deriveAddr' does, when an address of the
+-- list is used, and as 'cycleIndex' does for a start index of 2^31 or more.
+-- That includes the index at which BIP 32 calls the child key invalid, less
+-- than once in 2^127 derivations: the list does not go on to the next
+-- index, and neither do the descriptors of Bitcoin Core.
 deriveAddrs :: XPubKey -> KeyIndex -> [(Address, PubKey, KeyIndex)]
 deriveAddrs k =
   map f . cycleIndex
@@ -634,7 +726,8 @@ deriveAddrs k =
     f i = let (a, key) = deriveAddr k i in (a, key, i)
 
 -- | Cyclic list of all SegWit P2WPKH addresses derived from a public key
--- starting from an offset index.
+-- starting from an offset index. Throws 'DerivationException' as
+-- 'deriveAddrs' does.
 deriveWitnessAddrs ::
   XPubKey -> KeyIndex -> [(Address, PubKey, KeyIndex)]
 deriveWitnessAddrs k =
@@ -647,6 +740,11 @@ deriveWitnessAddrs k =
 -- network without SegWit, as 'xPubCompatWitnessAddr': there is no list
 -- there, not an empty one, so that a caller cannot take it for a wallet
 -- without addresses.
+--
+-- As with 'deriveCompatWitnessAddr', 'Nothing' is about the network only.
+-- For a key at depth 255 the result is 'Just' a list, and
+-- 'DerivationException' comes when its first address is used. A start index
+-- of 2^31 or more throws as 'cycleIndex' does.
 deriveCompatWitnessAddrs ::
   Network -> XPubKey -> KeyIndex -> Maybe [(Address, PubKey, KeyIndex)]
 deriveCompatWitnessAddrs net k start = do
@@ -1243,12 +1341,17 @@ applyPath path key =
 
 {- Helpers for derivation paths and addresses -}
 
--- | Derive an address from a given parent path.
+-- | Derive an address from a given parent path. Throws 'DerivationException'
+-- as 'derivePubPath' and 'deriveAddr' do: the key of the address is one step
+-- below the end of the path, so the path must end at depth 254 at most. For
+-- a key or a path that the program was given, 'tryDerivePubPath' follows the
+-- path and the index as one path, with an error value.
 derivePathAddr :: XPubKey -> SoftPath -> KeyIndex -> (Address, PubKey)
 derivePathAddr key path = deriveAddr (derivePubPath path key)
 
 -- | Cyclic list of all addresses derived from a given parent path and starting
--- from the given offset index.
+-- from the given offset index. Throws 'DerivationException' as
+-- 'derivePathAddr' and 'deriveAddrs' do.
 derivePathAddrs ::
   XPubKey -> SoftPath -> KeyIndex -> [(Address, PubKey, KeyIndex)]
 derivePathAddrs key path = deriveAddrs (derivePubPath path key)

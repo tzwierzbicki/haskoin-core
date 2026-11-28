@@ -276,6 +276,84 @@ spec = do
       pathToStr (Deriv :/ 0x7fffffff :: DerivPath) `shouldBe` "/2147483647"
       pathToStr (Deriv :| 0x7fffffff :: DerivPath) `shouldBe` "/2147483647'"
       pathToList (Deriv :| 0x7fffffff :: DerivPath) `shouldBe` [0xffffffff]
+  describe "A single step with an error value" $ do
+    -- The forms for a key that the program was given: every failure is a
+    -- value. The keys are the ones of BIP32 test vectors 1 and 2.
+    let prvAtDepth d = XPrvKey d xprv1.parent xprv1.index xprv1.chain xprv1.key
+        tooDeep = Left "Maximum derivation depth exceeded"
+        hardIndex = Left "Invalid child derivation index"
+    it "tryHardSubKey gives chain m/0' of BIP32 test vector 1" $
+      fmap (xPrvExport btc) (tryHardSubKey xprv1 0) `shouldBe` Right v1Chain0hPrv
+    it "tryPrvSubKey gives chain m/0'/1 of BIP32 test vector 1" $
+      fmap (xPrvExport btc) (tryPrvSubKey (fromJust (xPrvImport btc v1Chain0hPrv)) 1)
+        `shouldBe` Right v1Chain0h1Prv
+    it "tryPubSubKey gives chain m/0 of BIP32 test vector 2" $
+      fmap (xPubExport btc) (tryPubSubKey xpub2 0)
+        `shouldBe` Right
+          "xpub69H7F5d8KSRgmmdJg2KhpAK8SR3DjMwAdkxj3ZuxV27CprR9LgpeyGmXUbC6\
+          \wb7ERfvrnKZjXoUmmDznezpbZb7ap6r1D3tgFxHmwMkQTPH"
+    it "tryHardSubKey takes the largest index: chain m/0/2147483647' of BIP32 test vector 2" $ do
+      let chain0 =
+            "xprv9vHkqa6EV4sPZHYqZznhT2NPtPCjKuDKGY38FBWLvgaDx45zo9WQRUT3dKYn\
+            \jwih2yJD9mkrocEZXo1ex8G81dwSM1fwqWpWkeS3v86pgKt"
+      fmap (xPrvExport btc) (tryHardSubKey (fromJust (xPrvImport btc chain0)) 0x7fffffff)
+        `shouldBe` Right
+          "xprv9wSp6B7kry3Vj9m1zSnLvN3xH8RdsPP1Mh7fAaR7aRLcQMKTR2vidYEeEg2m\
+          \UCTAwCd6vnxVrcjfy2kRgVsFawNzmjuHc2YmYRmagcEPdU9"
+    it "tryPrvSubKey and tryPubSubKey take the largest index, 2^31 - 1" $ do
+      -- a soft child stores its index as given: 2^31 - 1 = 2147483647
+      fmap (.index) (tryPrvSubKey xprv1 0x7fffffff) `shouldBe` Right 2147483647
+      fmap (.index) (tryPubSubKey xpub1 0x7fffffff) `shouldBe` Right 2147483647
+    it "each gives an error value for an index of 2^31" $ do
+      fmap (.index) (tryPrvSubKey xprv1 0x80000000) `shouldBe` hardIndex
+      fmap (.index) (tryPubSubKey xpub1 0x80000000) `shouldBe` hardIndex
+      fmap (.index) (tryHardSubKey xprv1 0x80000000) `shouldBe` hardIndex
+    it "each gives an error value for a parent at depth 255" $ do
+      fmap (.depth) (tryPrvSubKey (prvAtDepth 255) 0) `shouldBe` tooDeep
+      fmap (.depth) (tryPubSubKey (atDepth 255 xpub1) 0) `shouldBe` tooDeep
+      fmap (.depth) (tryHardSubKey (prvAtDepth 255) 0) `shouldBe` tooDeep
+    it "each gives the child of a parent at depth 254, which is at depth 255" $ do
+      fmap (.depth) (tryPrvSubKey (prvAtDepth 254) 0) `shouldBe` Right 255
+      fmap (.depth) (tryPubSubKey (atDepth 254 xpub1) 0) `shouldBe` Right 255
+      fmap (.depth) (tryHardSubKey (prvAtDepth 254) 0) `shouldBe` Right 255
+    it "tryPubSubKey gives the address of deriveAddr for a key that has the child" $
+      -- BIP32 vector 2: the address of child 0 of the master key, as below
+      fmap (addrToText btc . xPubAddr) (tryPubSubKey xpub2 0)
+        `shouldBe` Right (Just "19EuDJdgfRkwCmRzbzVBHZWQG9QNWhftbZ")
+  describe "The address functions without an error value" $ do
+    -- They have no error value to give: what their comments promise for a
+    -- key without the child is a DerivationException, when the address is
+    -- used
+    let deep = atDepth 255 xpub1
+        tooDeep = DerivationException "Maximum derivation depth exceeded"
+        hardIndex = DerivationException "Invalid child derivation index"
+        badStart = DerivationException "cycleIndex: invalid index 2147483648"
+        firstIndex = map lst3 . take 1
+        -- Use the first address of a list that has no end
+        useFirst = mapM_ (evaluate . fst3) . take 1
+    it "the address of a child of a key at depth 255 throws a DerivationException" $ do
+      evaluate (fst (deriveAddr deep 0)) `shouldThrow` (== tooDeep)
+      evaluate (fst (deriveWitnessAddr deep 0)) `shouldThrow` (== tooDeep)
+      evaluate (addrToText btc . fst =<< deriveCompatWitnessAddr btc deep 0) `shouldThrow` (== tooDeep)
+    it "the address of the child 2^31 throws a DerivationException" $ do
+      evaluate (fst (deriveAddr xpub1 0x80000000)) `shouldThrow` (== hardIndex)
+      evaluate (fst (deriveWitnessAddr xpub1 0x80000000)) `shouldThrow` (== hardIndex)
+      evaluate (addrToText btc . fst =<< deriveCompatWitnessAddr btc xpub1 0x80000000)
+        `shouldThrow` (== hardIndex)
+    it "the address below a path that ends at depth 255 throws a DerivationException" $
+      evaluate (fst (derivePathAddr (atDepth 254 xpub1) (Deriv :/ 0) 0)) `shouldThrow` (== tooDeep)
+    it "the first address of a list from a key at depth 255 throws a DerivationException" $ do
+      useFirst (deriveAddrs deep 0) `shouldThrow` (== tooDeep)
+      useFirst (deriveWitnessAddrs deep 0) `shouldThrow` (== tooDeep)
+      useFirst (concat (deriveCompatWitnessAddrs btc deep 0)) `shouldThrow` (== tooDeep)
+    it "a list with a start index of 2^31 throws the DerivationException of cycleIndex" $ do
+      evaluate (firstIndex (deriveAddrs xpub1 0x80000000)) `shouldThrow` (== badStart)
+      evaluate (firstIndex (deriveWitnessAddrs xpub1 0x80000000)) `shouldThrow` (== badStart)
+      evaluate (maybe [] firstIndex (deriveCompatWitnessAddrs btc xpub1 0x80000000))
+        `shouldThrow` (== badStart)
+      evaluate (map snd (take 1 (pubSubKeys xpub1 0x80000000))) `shouldThrow` (== badStart)
+      evaluate (map snd (take 1 (prvSubKeys xprv1 0x80000000))) `shouldThrow` (== badStart)
+      evaluate (map snd (take 1 (hardSubKeys xprv1 0x80000000))) `shouldThrow` (== badStart)
   describe "Child index" $ do
     let m = makeXPrvKey (fromJust (decodeHex m1))
     it "a hardened child stores its index with the hard bit set" $ do
@@ -683,6 +761,15 @@ xprv1Text = "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNK
 tpub1Text = "tpubD6NzVbkrYhZ4XgiXtGrdW5XDAPFCL9h7we1vwNCpn8tGbBcgfVYjXyhWo4E1xkh56hjod1RhGjxbaTLV3X4FyWuejifB9jusQ46QzG87VKp"
 tprv1Text = "tprv8ZgxMBicQKsPeDgjzdC36fs6bMjGApWDNLR9erAXMs5skhMv36j9MV5ecvfavji5khqjWaWSFhN3YcCUUdiKH6isR4Pwy3U5y5egddBr16m"
 xpub2Text = "xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB"
+
+-- | Chains m/0' and m/0'/1 of BIP32 test vector 1, as the BIP writes them.
+v1Chain0hPrv, v1Chain0h1Prv :: Text
+v1Chain0hPrv =
+  "xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rG\
+  \L5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7"
+v1Chain0h1Prv =
+  "xprv9wTYmMFdV23N2TdNG573QoEsfRrWKQgWeibmLntzniatZvR9BmLnvSxqu53K\
+  \w1UmYPxLgboyZQaXwTCg8MSY3H2EU4pWcQDnRnrVA1xe8fs"
 
 xpub1, xpub2 :: XPubKey
 xpub1 = fromJust (xPubImport btc xpub1Text)

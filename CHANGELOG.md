@@ -48,6 +48,18 @@ is keyed by the whole block hash, `bloomRelevantUpdate` takes the network,
   empty stacks for a transaction without witness. The result is equal to
   the transaction given. See "Fixed" below.
 
+- **`tryPrvSubKey`, `tryPubSubKey` and `tryHardSubKey` derive one child of
+  an extended key, with an error value.** They are in
+  `Haskoin.Crypto.Keys.Extended`, beside `prvSubKey`, `pubSubKey` and
+  `hardSubKey`, which throw `DerivationException` and were built on them.
+  They give `Left` for a parent at depth 255, which has no child, and for
+  an index of 2^31 or more. `xPubImport` and `xPrvImport` read a key at
+  depth 255, as Bitcoin Core does, so a program that derived one child of a
+  key it was given had to check the depth itself, catch an exception out of
+  pure code, or go through a path of one step with `tryDerivePubPath`. The
+  address functions get no form with an error value, since
+  `xPubAddr <$> tryPubSubKey key i` gives the address of `deriveAddr key i`.
+
 ### Changed
 
 - **The nested SegWit address functions take the network, and give no address
@@ -271,6 +283,23 @@ is keyed by the whole block hash, `bloomRelevantUpdate` takes the network,
   `Left "Maximum derivation depth exceeded"` and
   `Left "Invalid child derivation index"`, the texts of `tryDerivePubPath`.
   No type changes, and keys that derive give the addresses they gave.
+- **The documentation says when a derivation throws.** The Haddock of
+  `DerivationException` called it "very unlikely". That was true of one
+  cause only, the child key that BIP 32 calls invalid, less than once in
+  2^127 derivations. The others are ordinary values: a parent at depth 255,
+  an index of 2^31 or more, a path that leads below depth 255, a seed of a
+  wrong length. The Haddock now lists the five causes and the two ways of a
+  program that derives from a key it was given. Fourteen functions that
+  throw said nothing of it, and say it now: `prvSubKey`, `pubSubKey`,
+  `hardSubKey`, their three lists, `deriveAddr`, `deriveWitnessAddr`,
+  `deriveCompatWitnessAddr`, their three lists, `derivePathAddr` and
+  `derivePathAddrs`. For `deriveCompatWitnessAddr` and its list, `Nothing`
+  is about the network only: for a key without the child the result is
+  `Just`, and the exception comes when the address is used. The README said
+  "Functions that can fail return `Maybe` or `Either String`" and called
+  `derivePath` in its examples: its sections "Errors" and "Extended keys"
+  now name the functions that throw and the forms with an error value. No
+  code changed.
 - **A transaction is equal to itself however its witness list is written.**
   The witness of a `Tx` is a list beside the inputs, so one transaction has
   several lists: none or a list of empty stacks, with or without the empty

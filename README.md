@@ -229,9 +229,21 @@ it, as the [PSBT example](#psbt) does.
 Functions that can fail return `Maybe` or `Either String`. The examples below
 turn those into `IO` failures with `either fail pure`.
 
-Hashes, paths and public keys have `IsString` instances, so you can write them as
-literals. Those instances call `error` on bad input. For input you do not control,
-use `hexToTxHash`, `hexToBlockHash`, `parsePath` and `textToAddr`.
+Some functions throw an exception out of pure code instead. They are for
+values that your program writes itself, and each has another form for input
+you do not control:
+
+- Hashes, paths and public keys have `IsString` instances, so you can write
+  them as literals. Those instances call `error` on bad input. For input you
+  do not control, use `hexToTxHash`, `hexToBlockHash`, `parsePath` and
+  `textToAddr`.
+- The derivation functions of extended keys that return no `Maybe` or `Either`
+  throw `DerivationException` for a key or a path that has no such child:
+  `derivePath`, `derivePubPath`, `prvSubKey`, `pubSubKey`, `hardSubKey`,
+  `deriveAddr` and the other address functions. For a key or a path you do
+  not control, use `tryDerivePath`, `tryDerivePubPath`, `tryPrvSubKey`,
+  `tryPubSubKey`, `tryHardSubKey` and `applyPath`, which return
+  `Either String`. See [Extended keys](#extended-keys).
 
 ### Amounts
 
@@ -430,6 +442,29 @@ too, and there any miner can take the coins sent to it. See
 `xPrvExport` and `xPubExport` write the standard `xprv` and `xpub` forms.
 `xPrvImport` and `xPubImport` read them back. The `ypub` and `zpub` prefixes are
 not supported.
+
+Not every key has the child you ask for. BIP-32 writes the depth of a key in
+one byte, so a key at depth 255 has no children, and a path cannot lead below
+that depth. The index of a child is below 2^31, for a hardened child too.
+`xPubImport` and `xPrvImport` read a key at depth 255, as Bitcoin Core does,
+so such a key can come from another party. The functions above are for keys
+and paths that your program made: `derivePath`, `derivePubPath` and the
+address functions throw `DerivationException` in these cases, and the
+exception comes when the key or the address is first used, which can be far
+from the call. For an extended key or a path that comes from outside, do one
+of these:
+
+- Check the key once, before you derive from it: a key at depth `d` has
+  descendants for `255 - d` steps.
+- Derive with the functions that return `Either String`: `tryPubSubKey`,
+  `tryPrvSubKey` and `tryHardSubKey` for one step, `tryDerivePubPath` and
+  `tryDerivePath` for a path. The address functions have no such form of
+  their own: `xPubAddr <$> tryPubSubKey key 0` gives the address of
+  `deriveAddr key 0`. `xPubWitnessAddr` and `xPubCompatWitnessAddr btc` take
+  the place of `xPubAddr` for the other two kinds.
+
+The multisig functions `deriveMSAddr`, `deriveMSAddrs`, `derivePathMSAddr`
+and `derivePathMSAddrs` return `Either String` and do not throw.
 
 `parsePath` reads a path at run time. It returns a `ParsedPath`, which
 `applyPath` applies to a private or a public key.
